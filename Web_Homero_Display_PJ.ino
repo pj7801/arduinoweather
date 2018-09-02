@@ -58,9 +58,6 @@ uint8_t sensorid = 1;
 int i2caddr_bme280 = 0x76;
 int bme_type = BME280_SparkFun;           // Look at BME_ definitions
 
-// Legfontosabb sor!
-LiquidCrystal_I2C lcd(0x3F, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
-
 // Normal vars
 const int led = BUILTIN_LED;
 unsigned long currentmilis, prevmilis;
@@ -70,6 +67,11 @@ unsigned long last_wificonnect_millis = 0;
 int init_bme280 = 255; // 255 sikertelen, 0 sikeres
 int ledstatus = 0;
 
+// Legfontosabb sor!
+#define LCD_ADDRESS 0x3F
+LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
+
+int lcd_connected = 0;
 int lcd_vilagit = 0;
 // 0 egyszerű modon írjuk ki
 // 1 bonyulultan irjuk ki
@@ -259,6 +261,10 @@ void scan_I2Cbus()
           Serial.print("BME280 (Si7021) found at address: 0x");
           Serial.println(address, HEX);
       }
+      if (address == LCD_ADDRESS) {
+        lcd_connected = 1;
+        Serial.println("Device detected at the LCD address, assuming we are the main unit with and LCD.");
+      }
       nDevices++;
     }
     else if (error == 4)
@@ -268,6 +274,9 @@ void scan_I2Cbus()
         Serial.print("0");
       Serial.println(address, HEX);
     }
+  }
+  if (!lcd_connected) {
+    Serial.println("No devices found at the LCD address, assuming we are a remote sensor.");
   }
   if (nDevices == 0)
     Serial.println("No I2C devices found\n");
@@ -1290,14 +1299,6 @@ void lcd_display_info_full()
   }
   display_field++;
   display_field = display_field % 4;
-//  lcd.setCursor(0,3);
-//  lcd.print("Time2refresh: ");
-//  lcd.print(easyreadtime(REMOTE_UPDATE- (currentmilis - last_tsp_milis)));
-
-// This only refreshes time every 5 secs, not so nice
-//    timeClient.update();
-//    lcd.print("NTPtime: ");
-//    lcd.print(timeClient.getFormattedTime());
 }
 
 
@@ -1343,17 +1344,23 @@ void setup(void) {
 
   buildinfo = display_Running_Sketch();
 
-  Serial.print("\nInit lcd ");  // Used to type in characters
+  Wire.begin();
+  Wire.setClock(400000); //Increase to fast I2C speed!
+  scan_I2Cbus();
 
-  lcd.begin(20, 4, LCD_5x8DOTS);       // initialize the lcd for 20 chars 4 lines, turn on backlight
-  lcd.backlight();
-  lcd_vilagit=1;
-  lcd.clear();
-  lcd.home();
-  lcd.setCursor(0, 0); //Start at character 4 on line 0
-  lcd.print("Hello, world!");
-  delay(1000);
-  lcd.setCursor(0, 0); //Start at character 4 on line 0
+  timeClient.begin();
+
+  if (lcd_connected) {
+    lcd.begin(20, 4, LCD_5x8DOTS);       // initialize the lcd for 20 chars 4 lines, turn on backlight
+    lcd.backlight();
+    lcd_vilagit=1;
+    lcd.clear();
+    lcd.home();
+    lcd.setCursor(0, 0); //Start at character 4 on line 0
+    lcd.print("Hello, world!");
+    delay(1000);
+    lcd.setCursor(0, 0); //Start at character 4 on line 0
+  }
   
   // EEprom init Ă©s egy kiolvasas
   EEPROM.begin(512);
@@ -1361,11 +1368,11 @@ void setup(void) {
   if ( eeprom_read() == false )
   {
     Serial.print("\nEEPROM not initialized");
-    lcd.print("EEPROM not inited!");
+    if (lcd_connected) lcd.print("EEPROM not inited!");
   }
   else
   {
-    lcd.print("Loading EEPROM");
+    if (lcd_connected) lcd.print("Loading EEPROM");
     Serial.print("\nEEPROM is initialized");
     Serial.print("\nLoading data from EEPROM");
     tempadjust = myeprom.tempadjust;
@@ -1381,12 +1388,15 @@ void setup(void) {
     Serial.print("\n check wifissid0: "); Serial.print(knownssid[0]);
     Serial.print("\n check wifipass0: "); Serial.print(knownpassword[0]);
   }
-
-  lcd.setCursor(0, 1); 
-  lcd.print("Connecting Wifi...");
+  if (lcd_connected) {
+    lcd.setCursor(0, 1); 
+    lcd.print("Connecting Wifi...");
+  }
   findandconnectstrongestwifi();
-  lcd.setCursor(0, 2);
-  lcd.print(WiFi.localIP());
+  if (lcd_connected) {
+    lcd.setCursor(0, 2);
+    lcd.print(WiFi.localIP());
+  }
   if (MDNS.begin("esp8266")) {
     Serial.println("\nMDNS responder started");
   }
@@ -1395,35 +1405,27 @@ void setup(void) {
   server.on("/setup", handleSetup);
   server.on("/t", handlet);
   server.on("/print24", handleprint24);
-  server.on("/collectnew", handlecollectnewdata);
-  server.on("/backlight",handlebacklight);
+  if (lcd_connected) {
+    server.on("/collectnew", handlecollectnewdata);
+    server.on("/backlight",handlebacklight);
+  }
 
   server.onNotFound(handleNotFound);
   server.begin();
   Serial.println("\nHTTP server started");
 
-  Wire.begin();
-  Wire.setClock(400000); //Increase to fast I2C speed!
-
   // inicializáljuk az utolsó 24óra mérését tartalamzó
   // tömböt;
   init_last24h();
 
-  scan_I2Cbus();
-  lcd.setCursor(0,3);
+  if (lcd_connected) lcd.setCursor(0,3);
   if (bme_type == BME280_Si7021) {
     setup_bme280_si7021();
-    lcd.print("Si7021 sensor OK");
+    if (lcd_connected) lcd.print("Si7021 sensor OK");
   } else {
     setup_bme280(i2caddr_bme280);
-    lcd.print("BME280 sensor OK");
+    if (lcd_connected) lcd.print("BME280 sensor OK");
   }
-
-  //delay(2000);
-
-  //lcd.home();
-  //lcd.clear();
-  //lcd.setCursor(0, 0);
 
   sensor[0].hostname = "localhost";
   sensor[0].status = SENSOR_IDLE;
@@ -1438,13 +1440,12 @@ void setup(void) {
     logtsp();
     update_last24h();
     update_local_sensor_data();
-    request_remote_sensor_data();
+    if (lcd_connected) request_remote_sensor_data();
   }
   delay(2000);
-  lcd.clear();
-  // NTP Client
-  timeClient.begin();
-
+  if (lcd_connected) {
+    lcd.clear();    
+  }
 }
 
 void request_remote_sensor_data()
@@ -1696,18 +1697,9 @@ void loop(void) {
       logtsp();
       update_last24h();
       update_local_sensor_data();
-      request_remote_sensor_data();
+      if (lcd_connected) request_remote_sensor_data();
     }
 
-    //
-    // Van adat a tavoli gépeknél
-    sensorid = remote_sensor_data_is_available();
-    if ( sensorid != -1 )
-    {
-      read_remote_sensor_data(sensorid);
-      update_remote_sensor_data(sensorid);
-      sensorid = -1;
-    }
     // Blink LED every 2 sec
     if ( currentmilis - last_blink_milis > 2000 )
     {
@@ -1715,68 +1707,76 @@ void loop(void) {
       if ( debug == 1 ) readadjustedtemp();
     }
 
-    // 5 másodpercenként van helyi mérés
-    //
-    if( currentmilis - last_lcdupdate_milis > 5000)
-     {
-      update_local_sensor_data();
-      lcd_display_info();
-      // ha ez nincs itt akár 1mp-t is kell varni a kov ido frissítésre
-      lcd_display_time();
-     }
-
-    // every 1 sec time on LCD is updated 
-    if( currentmilis - last_lcd_time_update_millis > 1000)
-     {
-      lcd_display_time();
-     }
-
-    // 1 perc utan kikapcsoljuk a villanyt
-    if( currentmilis - last_backlight_on_millis > 60000)
-     {
-      lcd.noBacklight();
-      lcd_displaymode = 0;
-      lcd_vilagit=0;
-     }
-
-    // Kapcsoljuk be gombnyomásra az LCD vilagitast
-    // ha 5 masodpercen belul mar felkapcsoltuk akkor hagyjuk
-    // val = LOW ha meg van nyomva
-    val = digitalRead(BACKLIGHT_PIN);
-    if( val == LOW )
-    {
-      if( currentmilis - last_backlight_on_millis > 1000 )
+    if (lcd_connected) {
+      sensorid = remote_sensor_data_is_available();
+      if ( sensorid != -1 )
       {
-//        lcd.backlight();
-//        last_backlight_on_millis = currentmilis;
-        Serial.print("\nButton pressed");
-        if (lcd_vilagit == 0)
-        {
-          // Azért nyomta meg mert nem világított
-          Serial.print("\nButton pressed, lcd light on");
-          lcd.backlight();
-          last_backlight_on_millis = currentmilis;
-          lcd_vilagit=1;  
-        }
-        else
-        {
-          // már világítunk...
-          // és megint megnyomja akkor  
-          // akkor a bonyolult kijelzést kéri
-          // vagy eppen az egyszerűt
-          Serial.print("\nButton pressed, lcd light already on, change display mode");
-          last_backlight_on_millis = currentmilis;
-          if( lcd_displaymode == 0 ) lcd_displaymode = 1;
-          else lcd_displaymode = 0;
-          lcd.clear();
+        read_remote_sensor_data(sensorid);
+        update_remote_sensor_data(sensorid);
+        sensorid = -1;
+      }
+ 
+      // 5 másodpercenként van helyi mérés
+      //
+      if( currentmilis - last_lcdupdate_milis > 5000)
+      {
+        update_local_sensor_data();
+        if (lcd_connected) {
           lcd_display_info();
+          // ha ez nincs itt akár 1mp-t is kell varni a kov ido frissítésre
+          lcd_display_time();
+        }
+      }
+  
+      // every 1 sec time on LCD is updated 
+      if( currentmilis - last_lcd_time_update_millis > 1000)
+       {
+        lcd_display_time();
+       }
+  
+      // 1 perc utan kikapcsoljuk a villanyt
+      if( currentmilis - last_backlight_on_millis > 60000)
+       {
+        lcd.noBacklight();
+        lcd_displaymode = 0;
+        lcd_vilagit=0;
+       }
+  
+      // Kapcsoljuk be gombnyomásra az LCD vilagitast
+      // ha 5 masodpercen belul mar felkapcsoltuk akkor hagyjuk
+      // val = LOW ha meg van nyomva
+      val = digitalRead(BACKLIGHT_PIN);
+      if( val == LOW )
+      {
+        if( currentmilis - last_backlight_on_millis > 1000 )
+        {
+  //        lcd.backlight();
+  //        last_backlight_on_millis = currentmilis;
+          Serial.print("\nButton pressed");
+          if (lcd_vilagit == 0)
+          {
+            // Azért nyomta meg mert nem világított
+            Serial.print("\nButton pressed, lcd light on");
+            lcd.backlight();
+            last_backlight_on_millis = currentmilis;
+            lcd_vilagit=1;  
+          }
+          else
+          {
+            // már világítunk...
+            // és megint megnyomja akkor  
+            // akkor a bonyolult kijelzést kéri
+            // vagy eppen az egyszerűt
+            Serial.print("\nButton pressed, lcd light already on, change display mode");
+            last_backlight_on_millis = currentmilis;
+            if( lcd_displaymode == 0 ) lcd_displaymode = 1;
+            else lcd_displaymode = 0;
+            lcd.clear();
+            lcd_display_info();
+          }
         }
       }
     }
-
-//    timeClient.update();
-//    Serial.println(timeClient.getFormattedTime());
-
   }
   else
   {
