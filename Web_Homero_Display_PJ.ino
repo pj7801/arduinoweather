@@ -7,7 +7,6 @@
 #include <Wire.h>
 #include <EEPROM.h>
 #include <LiquidCrystal_I2C.h>
-//#include <ButtonDebounce.h>
 // Include NTPclient libraries
 #include <NTPClient.h>
 #include <WiFiUdp.h>
@@ -35,14 +34,10 @@
 #define REMOTE_UPDATE 300000
 
 // Global vars
-const char* ssid1 = "xxx";
-const char* password1 = "xxx";
+#define KNOWNNET 3
+String knownssid[KNOWNNET] = {"eepromdummy", "xxx", "xxx"};
+String knownpassword[KNOWNNET] = {"eepromdummy", "xxx"  ,"xxx"};
 
-const char* ssid2 = "xxx";
-const char* password2 = "xxx";
-
-const char* ntp_pool = "au.pool.ntp.org";
-//const char* ntp_pool = "europe.pool.ntp.org";
 
 String tspapiKey = "xxx";
 int tspfield = 1;
@@ -56,8 +51,12 @@ int debug = 0;
 
 uint8_t sensorid = 1;
 
+
+#define BME280_SparkFun     0   // requires <SparkFunBME280.h>
+#define BME280_Si7021       1   // requires "Adafruit_Si7021.h"
+#define BME280_FiniteSpace  2   // requires <BME280I2C.h>
 int i2caddr_bme280 = 0x76;
-int fake_bme = 0;       // Si7021 alias fake BME280, ScanI2C will adjust this
+int bme_type = BME280_SparkFun;           // Look at BME_ definitions
 
 // Legfontosabb sor!
 LiquidCrystal_I2C lcd(0x3F, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
@@ -66,15 +65,26 @@ LiquidCrystal_I2C lcd(0x3F, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 const int led = BUILTIN_LED;
 unsigned long currentmilis, prevmilis;
 unsigned long last_tsp_milis, last_blink_milis, last_rootload_milis, last_lcdupdate_milis, last_lcd_time_update_millis, last_backlight_on_millis;
+unsigned long last_wificonnect_millis = 0;
 
 int init_bme280 = 255; // 255 sikertelen, 0 sikeres
 int ledstatus = 0;
 
+int lcd_vilagit = 0;
+// 0 egyszerű modon írjuk ki
+// 1 bonyulultan irjuk ki
+int lcd_displaymode = 0;
+
+
+const char* ntp_pool = "au.pool.ntp.org";
+//const char* ntp_pool = "europe.pool.ntp.org";
+uint8_t timezone = 10;
 // NTP client
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, ntp_pool, TIMEZONE*3600, NTP_REFRESH);
 time_t now;
 struct tm *now2;
+
 
 struct sensordata
 {
@@ -96,7 +106,7 @@ int display_field=0;
 
 WiFiClient client;
 BME280 mySensor;
-Adafruit_Si7021 myFakeSensor; // = Adafruit_Si7021();
+Adafruit_Si7021 mySensor_Si7021; // = Adafruit_Si7021();
 ESP8266WebServer server(80);
 
 WiFiEventHandler stationDisconnectedHandler;
@@ -114,13 +124,12 @@ struct webhomero_eeprom
   uint8_t tspfield; // A tinhgspeak-en ez az első mező ahonnan írunk, egy csatornára több hőmérő is dolgozik
   uint8_t villogas;    // villogas ki vagy bekapcsolása
   float tempadjust;       // legfontosabb mező, mennyivel módosítjuk a mért érékeket
-
-  int length_tspapiKey;
-  String tspapiKey;
-  int length_wifi1_ssid;
-  String wifi1_ssid;
-  int length_wifi1_passwd;
-  String wifi1_passwd;
+  uint8_t timezone;
+  char tspapiKey[50];
+  char wifissid[50];
+  char wifipass[50];
+  char ntppool[100]; // ntp pool
+  uint8_t lastbyte; // Ide 237-et írunk ha inicializalva van
 } myeprom;
 
 // 24 merest tarolunk, hogy tudjuk mikor volt a nap
@@ -171,37 +180,33 @@ String display_Running_Sketch (void) {
 // struktúrába
 boolean eeprom_read()
 {
-  int i = 0;
-  float f;
-  uint8_t u;
-
-  //read isinitited
-  myeprom.isinited = EEPROM.read(i);
-  i += sizeof(uint8_t);
-  Serial.print("\nmyeprom.isinited: "); Serial.print(myeprom.isinited);
-
-  // read sensorid ;
-  myeprom.sensorid = EEPROM.read(i);
-  i += sizeof(uint8_t);
-  Serial.print("\nmyeprom.sensorid: "); Serial.print(myeprom.sensorid);
-
-  //read startfield
-  myeprom.tspfield = EEPROM.read(i);
-  i += sizeof(uint8_t);
-  Serial.print("\nmyeprom.startfield: "); Serial.print(myeprom.tspfield);
-
-  //read villogas
-  myeprom.villogas = EEPROM.read(i);
-  i += sizeof(uint8_t);
-  Serial.print("\nmyeprom.villogj: "); Serial.print(myeprom.villogas);
-
-  //read tempadjust
-  EEPROM.get(i, f);
-  myeprom.tempadjust = f;
-  i += sizeof(float);
-  Serial.print("\nmyeprom.tempadjust: "); Serial.print(myeprom.tempadjust);
-
-  if ( myeprom.isinited == 1) return true;
+  Serial.print("\neeprom read: reading ");
+  EEPROM.get(0, myeprom);
+  
+  Serial.print("\nmyeprom.isinited: ");
+  Serial.print(myeprom.isinited);
+  Serial.print("\nmyeprom.sensorid: ");
+  Serial.print(myeprom.sensorid);
+  Serial.print("\nmyeprom.tspfield:");
+  Serial.print(myeprom.tspfield);
+  Serial.print("\nmyeprom.villogas: ");
+  Serial.print(myeprom.villogas);
+  Serial.print("\nmyeprom.tempadjust: ");
+  Serial.print(myeprom.tempadjust);
+  Serial.print("\nmyeprom.timezone: ");
+  Serial.print(myeprom.timezone);
+  Serial.print("\nmyeprom.tspapiKey: ");
+  Serial.print(myeprom.tspapiKey);
+  Serial.print("\nmyeprom.wifissid: ");
+  Serial.print(myeprom.wifissid);
+  Serial.print("\nmyeprom.wifipass: ");
+  Serial.print(myeprom.wifipass);
+  Serial.print("\nmyeprom.ntppool: ");
+  Serial.print(myeprom.ntppool);
+  Serial.print("\nmyeprom.lastbyte: ");
+  Serial.print(myeprom.lastbyte);
+  
+  if ( myeprom.isinited == 1 && myeprom.lastbyte == 237) return true;
   return false;
 }
 
@@ -210,42 +215,16 @@ boolean eeprom_read()
 // struktúrából az értékeket
 boolean eeprom_write()
 {
-  int i = 0;
-  float f;
-  uint8_t u;
-
-  //write isinited
-  EEPROM.write(i, 1);
-  i += sizeof(uint8_t);
-  Serial.print("\nWriting myeprom.isinited: "); Serial.print(1);
-
-  // write sensorid
-  EEPROM.write(i, myeprom.sensorid);
-  i += sizeof(uint8_t);
-  Serial.print("\nWriting myeprom.sesnsorid: "); Serial.print(sensorid);
-
-  //write startfield
-  u = myeprom.tspfield;
-  EEPROM.write(i, u);
-  i += sizeof(uint8_t);
-  Serial.print("\nWriting myeprom.startfield: "); Serial.print(u);
-
-  //write villogas
-  u = myeprom.villogas;
-  EEPROM.write(i, u);
-  i += sizeof(uint8_t);
-  Serial.print("\nWriting myeprom.villogas: "); Serial.print(u);
-
-  //read adjust
-  f = myeprom.tempadjust;
-  EEPROM.put(i, f);
-  i += sizeof(float);
-  Serial.print("\nWriting myeprom.tempadjust: "); Serial.print(f);
-
-  Serial.print("\nEEPROM commit... ");
+  Serial.print("\neeprom write: put ");
+  myeprom.isinited = 1;
+  myeprom.lastbyte = 237;
+  
+  EEPROM.put(0, myeprom);
+  
+  Serial.print("\neeprom write: commiting. ");
   EEPROM.commit();
 
-  Serial.print("\nReading back: ");
+  Serial.print("\n\neeprom write: reading back");
   eeprom_read();
 }
 
@@ -275,9 +254,9 @@ void scan_I2Cbus()
         Serial.print("0");
       Serial.print(address, HEX);
       Serial.print("  !\n");
-      if (address == 0x40) {    // Fake BME280 found!!! Si7021 has 2 addresses, 0x40 is one of them (0x76 the other)
-          fake_bme = 1;
-          Serial.print("Fake BME280 (Si7021) found at address: 0x");
+      if (address == 0x40) {    // Si7021 has 2 addresses, 0x40 is one of them (0x76 the other)
+          bme_type = BME280_Si7021;
+          Serial.print("BME280 (Si7021) found at address: 0x");
           Serial.println(address, HEX);
       }
       nDevices++;
@@ -395,14 +374,14 @@ int setup_bme280(byte address)
 }
 
 
-int setup_fake_bme280()
+int setup_bme280_si7021()
 {
   float t;
 
-  myFakeSensor = Adafruit_Si7021();
-  Serial.print("\nStarting FAKE BME280 (Si7021) at address 0x76 and 0x40");
+  mySensor_Si7021 = Adafruit_Si7021();
+  Serial.print("\nStarting BME280 Si7021 at address 0x76 and 0x40");
 
-  if (!myFakeSensor.begin()) {
+  if (!mySensor_Si7021.begin()) {
     Serial.println(": FAILED. Did not find Si7021 sensor!");
     init_bme280 = 255;
   } else {
@@ -410,12 +389,12 @@ int setup_fake_bme280()
     init_bme280 = 0;
     t = readadjustedtemp();
     tempfirstsample = t;
-    Serial.print("\nsetup_fake_bme280: Temp: ");
+    Serial.print("\nsetup_bme280_si7021: Temp: ");
     Serial.print(t);
-    Serial.print("\nsetup_fake_bme280: Humidity: ");
-    Serial.print(myFakeSensor.readHumidity());
-    Serial.print("\nsetup_fake_bme280: Pressure: HAHAHA. Si7021 doesn't do pressure!");
-    Serial.print("\nsetup_fake_bme280: finished\n");
+    Serial.print("\nsetup_bme280_si7021: Humidity: ");
+    Serial.print(mySensor_Si7021.readHumidity());
+    Serial.print("\nsetup_bme280_si7021: Pressure: N/A. Si7021 doesn't do pressure!");
+    Serial.print("\nsetup_bme280_si7021: finished\n");
   }
      
   return init_bme280;
@@ -429,8 +408,8 @@ float readadjustedtemp()
 {
   float t = 0.0;
 
-  if (fake_bme) {
-    t = myFakeSensor.readTemperature();
+  if (bme_type == BME280_Si7021) {
+    t = mySensor_Si7021.readTemperature();
     
   } else {
     mySensor.setMode(MODE_FORCED); //Wake up sensor and take reading
@@ -454,8 +433,8 @@ float readadjustedhum()
 {
   float h = 0.0;
 
-  if (fake_bme) {
-    h = myFakeSensor.readHumidity();    
+  if (bme_type == BME280_Si7021) {
+    h = mySensor_Si7021.readHumidity();    
   } else {
     h = mySensor.readFloatHumidity();
   }
@@ -467,7 +446,7 @@ float readadjustedpress()
 {
   float p = 0.0;
 
-  if (fake_bme) {
+  if (bme_type == BME280_Si7021) {
     p = 0;  
   } else {
     p = mySensor.readFloatPressure();
@@ -500,10 +479,10 @@ void logtsp()
 
   if ( debug == 1) return;
   if ( tspapiKey == "" ) 
-    {
-      Serial.print("\n Skipping thingspeak  data upload.");
-      return;
-    }
+  {
+    Serial.print("\n Skipping thingspeak  data upload.");
+    return;
+  }
 
   if (client.connect("api.thingspeak.com", 80)) { //   "184.106.153.149" or api.thingspeak.com
     String postStr = tspapiKey;
@@ -613,20 +592,27 @@ void handleRoot() {
   message += readadjustedpress();
 
   // Wget sorok
-  message += "<br><br>\n DATA;";
+  message += "<br><br>\n Sensor[0]: ";
   message += readadjustedtemp();
   message += ";";
   message += readadjustedhum();
   message += ";";
   message += readadjustedpress();
+  // this needs to be nicer
+  message += "\n<br> Sensor[1]: ";
+  message += sensor[1].t;
+  message += ";";
+  message += sensor[1].h;
+  message += ";";
+  message += sensor[1].p;
 
   message += "<br><br>\n ";
   message += wifi_event;
 
-message += "<br> Wifi SSID:";
-message += WiFi.SSID();
-message += "<br> Wifi signal strength (dBm): ";
-message += WiFi.RSSI();
+  message += "<br> Wifi SSID:";
+  message += WiFi.SSID();
+  message += "<br> Wifi signal strength (dBm): ";
+  message += WiFi.RSSI();
 
   message += "\n<br><br> Uptime : ";
   message += easyreadtime( currentmilis );
@@ -747,10 +733,34 @@ void handleset() {
     if ( server.argName(i) == "tspapikey" )
     {
       tspapiKey = (String)server.arg(i);
-      myeprom.tspapiKey = tspapiKey;
+      tspapiKey.toCharArray(myeprom.tspapiKey, 50);
+      //myeprom.tspapiKey = tspapiKey;
       msg2 += "\ntspapiKey updated: ";
-      msg2 += tspapiKey;
+      msg2 += myeprom.tspapiKey;
+      //msg2 += tspapiKey;
+    }
 
+    if ( server.argName(i) == "wifissid" )
+    {
+      knownssid[0] = (String)server.arg(i);
+      knownssid[0].toCharArray(myeprom.wifissid, 50);
+      msg2 += "\nwifissid updated: ";
+      msg2 += myeprom.wifissid;
+    }
+
+    if ( server.argName(i) == "wifipass" )
+    {
+      knownpassword[0] = (String)server.arg(i);
+      knownpassword[0].toCharArray(myeprom.wifipass, 50);
+      msg2 += "\nwifipass updated: ";
+      msg2 += myeprom.wifipass;
+    }
+      if ( server.argName(i) == "ntppool" )
+    {
+      s2 = (String)server.arg(i);
+      s2.toCharArray(myeprom.ntppool, 100);
+      msg2 += "\nntppool updated: ";
+      msg2 += myeprom.ntppool;
     }
 
     if ( server.argName(i) == "tspfield" )
@@ -771,13 +781,22 @@ void handleset() {
       msg2 += "\nvillogas updated: ";
       msg2 += villogas;
     }
+    if ( server.argName(i) == "timezone" )
+    {
+      s2 = (String)server.arg(i);
+      timezone = s2.toInt();
+      myeprom.timezone = timezone;
+      msg2 += "\ntimezone updated: ";
+      msg2 += timezone;
+      timeClient.setTimeOffset(timezone*3600);
+    }
 
     if ( server.argName(i) == "sensorid" )
     {
       s2 = (String)server.arg(i);
       sensorid = s2.toInt();
       myeprom.sensorid = sensorid;
-      msg2 += "\nvillogas updated: ";
+      msg2 += "\nsensorid updated: ";
       msg2 += sensorid;
     }
 
@@ -822,22 +841,38 @@ void handleSetup()
 \n  <td><input type=\"text\" name=\"adjust\" maxlength=\"5\" value=\"";
   message += tempadjust;
   message += "\"></td></tr> \
-\n  <tr><td>ThingSpeak Channel: \
-\n  <td><input type=\"text\" name=\"tspapikey\" value=\"";
+\n  <tr><td>ThingSpeak Channel: </td>\
+\n  <td><input type=\"text\" name=\"tspapikey\" maxlength=\"50\" value=\"";
   message += tspapiKey;
   message += "\"></td></tr> \
-\n  <tr><td>ThingSpeak starting filed number (if empty skip upload) : \
+\n  <tr><td>ThingSpeak starting filed number (if empty skip upload) :</td> \
 \n  <td><input type=\"text\" name=\"tspfield\" maxlength=\"5\" value=\"";
   message += tspfield;
   message += "\"></td></tr> \
-\n  <tr><td>Villogas: \
+\n  <tr><td>Villogas: </td>\
 \n  <td><input type=\"text\" name=\"villogas\" maxlength=\"1\" value=\"";
   message += villogas;
   message += "\"></td></tr> \
-\n  <tr><td>SensorID: \
+\n  <tr><td>SensorID: </td>\
 \n  <td><input type=\"text\" name=\"sensorid\" maxlength=\"2\" value=\"";
   message += sensorid;
   message += "\"></td></tr> \
+\n  <tr><td>Timezone: 2 hu-dst 3 hu 10 nsw</td>\
+\n  <td><input type=\"text\" name=\"timezone\" maxlength=\"2\" value=\"";
+  message += timezone;
+  message += "\"></td></tr> \
+  \n  <tr><td>Wifi SSID: </td>\
+\n  <td><input type=\"text\" name=\"wifissid\" maxlength=\"50\" value=\"";
+  message += knownssid[0];
+  message += "\"></td></tr> \
+\n  <tr><td>Wifi Pass</td>\
+\n  <td><input type=\"text\" name=\"wifipass\" maxlength=\"50\" value=\"";
+  message += knownpassword[0];
+  message += "\"></td></tr> \
+\n  <tr><td>NTP pool</td>\
+\n  <td><input type=\"text\" name=\"ntppool\" maxlength=\"100\" value=\"";
+  message += ntp_pool;
+  message += "\"></td></tr> \  
 \n  <tr><td>\
 \n  <input type=\"submit\" name=\"submit\" value=\"Save\"></td></tr> \
 \n  <tr><td>\
@@ -854,6 +889,7 @@ void handlebacklight()
 {
   last_backlight_on_millis = millis();
   lcd.backlight();
+  lcd_vilagit=1;
   handleRoot();
 }
 
@@ -866,18 +902,62 @@ void onStationDisconnected(const WiFiEventSoftAPModeStationDisconnected& evt) {
   Serial.print("Station disconnected: ");
   wifi_event += "\nWifi disconnect at (s):";
   wifi_event += millis() / 1000;
-  do
+/*  do
   {
     res = connectToWIFI(ssid1, password1);
     if ( res != 0 ) res = connectToWIFI ( ssid2, password2);
   } while ( res != 0);
-
-
+*/
+  findandconnectstrongestwifi();
 }
 
-int connectToWIFI(const char *ssid, const char *password)
+void printScanResult(int networksFound)
 {
-  int tries = 0;
+  Serial.printf("\n%d network(s) found\n", networksFound);
+  for (int i = 0; i < networksFound; i++)
+  {
+    Serial.printf("%d: %s, Ch:%d (%ddBm) %s\n", i + 1, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i) == ENC_TYPE_NONE ? "open" : "");
+  }
+}
+
+
+// visszaadja a legerosebb network sorszamat
+// amely erosebben sugaroz mint a masodik értek
+// parameter: hany halozatot talaltunk korabban, max erosseg
+// a max erosseg azert kell, ha nem sikerul a legerosebbhez
+// csatlakozni, megyunk a gyengebbre
+int strongestsignalbelowdbm(int networksFound, int maxdbm)
+{
+  int retval = -1;
+  // lehetetlenul alacsony ertek
+  long myrssi = -10000;
+
+  for (int i = 0; i < networksFound; i++)
+  {
+
+    // Lehet olyan, hogy egy ilyen eros halot mar lattunk
+    // Direkt rontunk rajta egyet
+    //if (myrssi == WiFi.RSSI(i))
+    //{
+    //  WiFi.RSSI(i)=WiFi.RSSI(i)-1;
+    //}
+
+    if (  myrssi < WiFi.RSSI(i) &&  maxdbm > WiFi.RSSI(i) )
+    {
+      retval = i;
+      myrssi = WiFi.RSSI(i);
+    }
+  }
+  if ( retval > -1) Serial.printf("\nStrongest signal below: (%ddBm) %s, Ch:%d (%ddBm) %s\n", maxdbm, WiFi.SSID(retval).c_str(), WiFi.channel(retval), WiFi.RSSI(retval), WiFi.encryptionType(retval) == ENC_TYPE_NONE ? "open" : "");
+  else Serial.printf("\nNo signal below: (%ddBm) retval: %d", maxdbm, retval);
+  return retval;
+}
+
+
+int connecttoWIFI(const char *ssid, const char *password)
+{
+//  int tries = 0;
+  int waittime = 0;
   WiFi.disconnect();
   WiFi.begin(ssid, password);
   Serial.println("\n");
@@ -885,9 +965,11 @@ int connectToWIFI(const char *ssid, const char *password)
   Serial.println(ssid);
 
   // Wait for connection approx 2 minutes
-  while (WiFi.status() != WL_CONNECTED && tries < 120) {
+//  while (WiFi.status() != WL_CONNECTED && tries < 120) {
+  while (WiFi.status() != WL_CONNECTED &&  waittime < 120 ) {
     delay(500);
-    tries = tries + 1;
+//    tries = tries + 1;
+    waittime = waittime + 1;
     Serial.print(".");
   }
   if ( WiFi.status() == WL_CONNECTED)
@@ -913,6 +995,76 @@ int connectToWIFI(const char *ssid, const char *password)
   }
 
 }
+
+
+int findandconnectstrongestwifi()
+{
+  int i, j, n, target;
+  int isconnected = 1 ;
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+  //WiFi.scanNetworks(async, show_hidden)
+  // sync scan, with showing hidden networks
+  n = WiFi.scanNetworks(false, true);
+  if ( n == -1 )
+  {
+    Serial.print("\n No WiFi network in range ...");
+    return -1;
+  }
+  printScanResult(n);
+  // Let's find the absolute strongest first
+  target = strongestsignalbelowdbm(n, 0);
+  //Trying to connect
+  //Max 3 times / target
+  do
+  {
+    // Let's see if we have the password for this network
+    for (i = 0; i < KNOWNNET && isconnected != 0; i++)
+    {
+      //Serial.printf("\nDo we have password for target %s -> entry %s .",WiFi.SSID(target).c_str(), knownssid[i].c_str());
+      if ( knownssid[i] == WiFi.SSID(target) )
+      {
+        // Megvan az SSID az ismertek kozott
+        // Megprobalunk csatlakozni
+        Serial.printf("\nFound password for %s .", WiFi.SSID(target).c_str());
+        isconnected = connecttoWIFI(knownssid[i].c_str(), knownpassword[i].c_str());
+        if ( isconnected == 0 )
+        {
+          Serial.print("\nConnected");
+        }
+        // Break the for loop
+        break;
+      }
+      else
+      {
+        // Serial.print("SSIDs do not match.");
+      }
+    }
+    //Serial.print("\nScanned password database(end of for)");
+    // Ha nem sikerült csatlakozni
+    if ( isconnected != 0 )
+    {
+      // Keresünk új célpontot
+      Serial.print("\nNot connected, looking for new target");
+      target = strongestsignalbelowdbm(n, WiFi.RSSI(target));
+      
+      // Ha nincs mar target abbahagyjuk a while ciklust
+      if( target == -1 ) break; 
+    }
+  } while ( isconnected != 0 );
+  if ( isconnected == 0 )
+  {
+    Serial.print("\nSuccessfully connected");
+    return 0;
+  }
+  else
+  {
+    Serial.print("\nFailed to connect");
+    return -1;
+  }
+}
+
 
 void blink()
 {
@@ -1046,6 +1198,33 @@ String minmax_last24h()
 
 void lcd_display_info()
 {
+  if( lcd_displaymode == 0) lcd_display_info_simple();
+  else lcd_display_info_full();
+}
+
+void lcd_display_info_simple()
+{
+  last_lcdupdate_milis = millis();
+  lcd.home();
+  lcd.clear();
+  
+  lcd.setCursor(0, 0);
+  lcd.print(" T(inside):  ");
+  lcd.print(sensor[0].t);
+  lcd.setCursor(0, 1);
+  lcd.print(" T(outside): ");
+  lcd.print(sensor[1].t);
+  // Ha több mint tíz perce nem frissült, akkor hibajelzés
+  if( last_lcdupdate_milis - sensor[1].lastconnectedmillis > 600000 ) lcd.print("!");
+  else lcd.print(" ");
+
+//  lcd.setCursor(0, 2);
+//  lcd.print(" T(fent):");
+//  lcd.print(sensor[2].t);
+}
+
+void lcd_display_info_full()
+{
   int i;
   long lastreadmillisago;
   //Serial.print("\nlcd update");
@@ -1070,28 +1249,25 @@ void lcd_display_info()
     lcd.setCursor(0, i+2);
     lcd.print("                    ");
     lcd.setCursor(0, i+2);
-    lcd.print("T:");
-    lcd.print(sensor[i].t);
+    //lcd.print("T:");
+    //lcd.print(sensor[i].t);
 
     switch ( display_field )
     {
       case 0: 
-              lcd.print(" Tmin:");
+              lcd.print("Tmin:");
               lcd.print(sensor[i].tmin);
-              break;
-      case 1: 
-              lcd.print(" Tmax:");
+              lcd.setCursor(11, i+2);
+              lcd.print("max:");
               lcd.print(sensor[i].tmax);
               break;
-      case 2: 
-              lcd.print(" h:");
+      case 1: 
+              lcd.print("h:");
               lcd.print(sensor[i].h);
-              break;
-      case 3: 
               lcd.print(" p:");
               lcd.print(sensor[i].p);
               break;
-      case 4: 
+      case 2: 
               lcd.setCursor(0, i+2);
               lcd.print("                    ");
               lcd.setCursor(0, i+2);
@@ -1100,7 +1276,7 @@ void lcd_display_info()
               lcd.print(" ");
               lcd.print(easyreadtime(lastreadmillisago));
               break;
-        case 5: 
+      case 3: 
               lcd.setCursor(0, i+2);
               lcd.print("                    ");
               lcd.setCursor(0, i+2);
@@ -1113,7 +1289,7 @@ void lcd_display_info()
     }  
   }
   display_field++;
-  display_field = display_field % 6;
+  display_field = display_field % 4;
 //  lcd.setCursor(0,3);
 //  lcd.print("Time2refresh: ");
 //  lcd.print(easyreadtime(REMOTE_UPDATE- (currentmilis - last_tsp_milis)));
@@ -1128,8 +1304,11 @@ void lcd_display_info()
 void lcd_display_time(void) {
   last_lcd_time_update_millis = millis();
   lcd.home();
-  lcd.setCursor(0,1);
-
+  if (lcd_displaymode == 0) {
+    lcd.setCursor(0,3);
+  } else {
+    lcd.setCursor(0,1);
+  }
   timeClient.update();
   
   now = timeClient.getEpochTime();
@@ -1146,8 +1325,7 @@ void lcd_display_time(void) {
     lcd.print(0);
   lcd.print(now2->tm_mday);
   lcd.print(" ");  
-  lcd.print(timeClient.getFormattedTime());
-  
+  lcd.print(timeClient.getFormattedTime()); 
 }
 
 
@@ -1169,43 +1347,49 @@ void setup(void) {
 
   lcd.begin(20, 4, LCD_5x8DOTS);       // initialize the lcd for 20 chars 4 lines, turn on backlight
   lcd.backlight();
+  lcd_vilagit=1;
   lcd.clear();
   lcd.home();
   lcd.setCursor(0, 0); //Start at character 4 on line 0
   lcd.print("Hello, world!");
-  lcd.setCursor(0,1);
-  lcd.print("Connecting Wifi...");
-
-  do
-  {
-    res = connectToWIFI(ssid1, password1);
-    if ( res != 0 ) res = connectToWIFI ( ssid2, password2);
-  } while ( res != 0);
-
-  lcd.setCursor(0,2);
-  lcd.print(WiFi.localIP());
-
-  if (MDNS.begin("esp8266")) {
-    Serial.println("MDNS responder started");
-  }
-
-  // EEprom init és egy kiolvasás
+  delay(1000);
+  lcd.setCursor(0, 0); //Start at character 4 on line 0
+  
+  // EEprom init Ă©s egy kiolvasas
   EEPROM.begin(512);
 
   if ( eeprom_read() == false )
   {
     Serial.print("\nEEPROM not initialized");
+    lcd.print("EEPROM not inited!");
   }
   else
   {
+    lcd.print("Loading EEPROM");
     Serial.print("\nEEPROM is initialized");
     Serial.print("\nLoading data from EEPROM");
     tempadjust = myeprom.tempadjust;
     villogas = myeprom.villogas;
     tspfield = myeprom.tspfield;
     sensorid = myeprom.sensorid;
+    timezone = myeprom.timezone;
+    timeClient.setTimeOffset(timezone*3600);
+    knownssid[0]=myeprom.wifissid;
+    knownpassword[0]=myeprom.wifipass;
+    tspapiKey=myeprom.tspapiKey;
+    Serial.print("\n check tspapiKey: "); Serial.print(tspapiKey);
+    Serial.print("\n check wifissid0: "); Serial.print(knownssid[0]);
+    Serial.print("\n check wifipass0: "); Serial.print(knownpassword[0]);
   }
 
+  lcd.setCursor(0, 1); 
+  lcd.print("Connecting Wifi...");
+  findandconnectstrongestwifi();
+  lcd.setCursor(0, 2);
+  lcd.print(WiFi.localIP());
+  if (MDNS.begin("esp8266")) {
+    Serial.println("\nMDNS responder started");
+  }
   server.on("/", handleRoot);
   server.on("/set", handleset);
   server.on("/setup", handleSetup);
@@ -1227,15 +1411,15 @@ void setup(void) {
 
   scan_I2Cbus();
   lcd.setCursor(0,3);
-  if (fake_bme) {
-    setup_fake_bme280();
+  if (bme_type == BME280_Si7021) {
+    setup_bme280_si7021();
     lcd.print("Si7021 sensor OK");
   } else {
     setup_bme280(i2caddr_bme280);
     lcd.print("BME280 sensor OK");
   }
 
-  delay(2000);
+  //delay(2000);
 
   //lcd.home();
   //lcd.clear();
@@ -1256,7 +1440,7 @@ void setup(void) {
     update_local_sensor_data();
     request_remote_sensor_data();
   }
-
+  delay(2000);
   lcd.clear();
   // NTP Client
   timeClient.begin();
@@ -1537,6 +1721,8 @@ void loop(void) {
      {
       update_local_sensor_data();
       lcd_display_info();
+      // ha ez nincs itt akár 1mp-t is kell varni a kov ido frissítésre
+      lcd_display_time();
      }
 
     // every 1 sec time on LCD is updated 
@@ -1545,10 +1731,12 @@ void loop(void) {
       lcd_display_time();
      }
 
-    // 2 perc utan kikapcsoljuk a villanyt
-    if( currentmilis - last_backlight_on_millis > 120000)
+    // 1 perc utan kikapcsoljuk a villanyt
+    if( currentmilis - last_backlight_on_millis > 60000)
      {
       lcd.noBacklight();
+      lcd_displaymode = 0;
+      lcd_vilagit=0;
      }
 
     // Kapcsoljuk be gombnyomásra az LCD vilagitast
@@ -1557,10 +1745,32 @@ void loop(void) {
     val = digitalRead(BACKLIGHT_PIN);
     if( val == LOW )
     {
-      if( currentmilis - last_backlight_on_millis > 5000 )
+      if( currentmilis - last_backlight_on_millis > 1000 )
       {
-        lcd.backlight();
-        last_backlight_on_millis = currentmilis;
+//        lcd.backlight();
+//        last_backlight_on_millis = currentmilis;
+        Serial.print("\nButton pressed");
+        if (lcd_vilagit == 0)
+        {
+          // Azért nyomta meg mert nem világított
+          Serial.print("\nButton pressed, lcd light on");
+          lcd.backlight();
+          last_backlight_on_millis = currentmilis;
+          lcd_vilagit=1;  
+        }
+        else
+        {
+          // már világítunk...
+          // és megint megnyomja akkor  
+          // akkor a bonyolult kijelzést kéri
+          // vagy eppen az egyszerűt
+          Serial.print("\nButton pressed, lcd light already on, change display mode");
+          last_backlight_on_millis = currentmilis;
+          if( lcd_displaymode == 0 ) lcd_displaymode = 1;
+          else lcd_displaymode = 0;
+          lcd.clear();
+          lcd_display_info();
+        }
       }
     }
 
@@ -1575,6 +1785,14 @@ void loop(void) {
     if ( currentmilis - last_blink_milis > 500)
     {
       blink();
+    }
+    // Ha nem kapcsolódunk pl. nem sikerült az setupban
+    // akkor két percenként azért próbálkozunk
+    if (  WiFi.status() != WL_CONNECTED && currentmilis - last_wificonnect_millis > 120000 )
+    {
+      Serial.print("\nTrying to connect to wifi");
+      last_wificonnect_millis=currentmilis;
+      findandconnectstrongestwifi();
     }
 
   }
