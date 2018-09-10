@@ -1,4 +1,5 @@
 #include <SparkFunBME280.h>
+//#include <BME280I2C.h>    // this is for the Bosch sensor. Not compatible with SparkFunBME280, one has to be removed
 #include "Adafruit_Si7021.h"
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -54,9 +55,21 @@ uint8_t sensorid = 1;
 
 #define BME280_SparkFun     0   // requires <SparkFunBME280.h>
 #define BME280_Si7021       1   // requires "Adafruit_Si7021.h"
-#define BME280_FiniteSpace  2   // requires <BME280I2C.h>
+#define BME280_Bosch        3   // requires <BME280I2C.h> Bosch FiniteSpace
 int i2caddr_bme280 = 0x76;
-int bme_type = BME280_SparkFun;           // Look at BME_ definitions
+int bme_type = 0;               // Look at BME_ definitions
+
+BME280 mySensor_SparkFun;
+Adafruit_Si7021 mySensor_Si7021; // = Adafruit_Si7021();
+
+// Bosch BME280 bacic variables
+/*
+BME280I2C mySensor_Bosch;
+float Bosch_temp(NAN), Bosch_hum(NAN), Bosch_pres(NAN);
+BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
+BME280::PresUnit presUnit(BME280::PresUnit_Pa);
+*/
+
 
 // Normal vars
 const int led = BUILTIN_LED;
@@ -107,8 +120,6 @@ struct sensordata
 int display_field=0;
 
 WiFiClient client;
-BME280 mySensor;
-Adafruit_Si7021 mySensor_Si7021; // = Adafruit_Si7021();
 ESP8266WebServer server(80);
 
 WiFiEventHandler stationDisconnectedHandler;
@@ -275,6 +286,40 @@ void scan_I2Cbus()
       Serial.println(address, HEX);
     }
   }
+  if (bme_type != BME280_Si7021) {
+    // if we don't have Si7021 we still have to figure out is it's a SparkFun or a Bosch sensor
+    /*
+    if (mySensor_Bosch.begin()) {
+      // The Bosch sensor seems to be initialized
+      bme_type = BME280_Bosch;
+      switch(mySensor_Bosch.chipModel()) {
+         case BME280::ChipModel_BME280:
+           Serial.println("Found Bosch BME280 sensor! Success.");
+           break;
+         case BME280::ChipModel_BMP280:
+           Serial.println("Found Bosch BMP280 sensor! No Humidity available.");
+           break;
+         default:
+           Serial.println("Found UNKNOWN sensor! Error!");
+      }            
+    } else {*/
+      Serial.println("Found SparkFun BME280");
+      bme_type = BME280_SparkFun;
+    //}
+  }
+
+  switch (bme_type) {
+    case BME280_SparkFun:
+      Serial.println("BME280 sensor type: SparkFun");
+      break;
+    case BME280_Si7021:
+      Serial.println("BME280 sensor type: Si7021");
+      break;
+    case BME280_Bosch:
+      Serial.println("BME280 sensor type: Bosch");
+      break;
+  }
+  
   if (!lcd_connected) {
     Serial.println("No devices found at the LCD address, assuming we are a remote sensor.");
   }
@@ -285,72 +330,20 @@ void scan_I2Cbus()
 }
 
 
-
-int setup_bme280(byte address)
+int setup_bme280_sparkfun(byte address)
 {
   bool initres;
   float t;
-  //***Driver settings********************************//
-  //commInterface can be I2C_MODE or SPI_MODE
-  //specify chipSelectPin using arduino pin names
-  //specify I2C address.  Can be 0x77(default) or 0x76
-
-  //For I2C, enable the following and disable the SPI section
-  //mySensor.settings.commInterface = I2C_MODE;
-  // mySensor.settings.I2CAddress = 0x76;
-  // mySensor.settings.I2CAddress = address;
 
 
-  mySensor.reset();
-  //mySensor.settings.commInterface = I2C_MODE;
-  mySensor.setI2CAddress(address);
-
-  //For SPI enable the following and dissable the I2C section
-  //mySensor.settings.commInterface = SPI_MODE;
-  //mySensor.settings.chipSelectPin = 10;
-
-
-  //***Operation settings*****************************//
-
-  //runMode can be:
-  //  0, Sleep mode
-  //  1 or 2, Forced mode
-  //  3, Normal mode
-  mySensor.setMode (MODE_FORCED); //sleep mode
-
-  //tStandby can be:
-  //  0, 0.5ms
-  //  1, 62.5ms
-  //  2, 125ms
-  //  3, 250ms
-  //  4, 500ms
-  //  5, 1000ms
-  //  6, 10ms
-  //  7, 20ms
-  mySensor.setStandbyTime(3);
-
-  //filter can be off or number of FIR coefficients to use:
-  //  0, filter off
-  //  1, coefficients = 2
-  //  2, coefficients = 4
-  //  3, coefficients = 8
-  //  4, coefficients = 16
-  mySensor.setFilter(0);
-
-  //tempOverSample can be:
-  //  0, skipped
-  //  1 through 5, oversampling *1, *2, *4, *8, *16 respectively
-  mySensor.setTempOverSample(3);
-
-  //pressOverSample can be:
-  //  0, skipped
-  //  1 through 5, oversampling *1, *2, *4, *8, *16 respectively
-  mySensor.setPressureOverSample(1);
-
-  //humidOverSample can be:
-  //  0, skipped
-  //  1 through 5, oversampling *1, *2, *4, *8, *16 respectively
-  mySensor.setHumidityOverSample(1);
+  mySensor_SparkFun.reset();
+  mySensor_SparkFun.setI2CAddress(address);
+  mySensor_SparkFun.setMode (MODE_FORCED); //sleep mode
+  mySensor_SparkFun.setStandbyTime(3);
+  mySensor_SparkFun.setFilter(0);
+  mySensor_SparkFun.setTempOverSample(3);
+  mySensor_SparkFun.setPressureOverSample(1);
+  mySensor_SparkFun.setHumidityOverSample(1);
 
   delay(50);  //Make sure sensor had enough time to turn on. BME280 requires 2ms to start up.         Serial.begin(57600);
 
@@ -358,8 +351,8 @@ int setup_bme280(byte address)
   Serial.print("\nStarting BME280 at address 0x");
   Serial.print(address);
   //Calling .begin() causes the settings to be loaded
-  initres = mySensor.beginI2C();
-  mySensor.setMode(MODE_SLEEP);
+  initres = mySensor_SparkFun.beginI2C();
+  mySensor_SparkFun.setMode(MODE_SLEEP);
 
   if ( initres == true )
   {
@@ -375,12 +368,15 @@ int setup_bme280(byte address)
   Serial.print("\nsetup_bme280: Temp: ");
   Serial.print(t);
   Serial.print("\nsetup_bme280: Humidity: ");
-  Serial.print(mySensor.readFloatHumidity());
+  Serial.print(readadjustedhum());
   Serial.print("\nsetup_bme280: Pressure: ");
-  Serial.print(mySensor.readFloatPressure());
+  Serial.print(readadjustedpress());
   Serial.print("\nsetup_bme280: finished\n");
   return init_bme280;
+ 
+//  return 0;
 }
+
 
 
 int setup_bme280_si7021()
@@ -401,7 +397,7 @@ int setup_bme280_si7021()
     Serial.print("\nsetup_bme280_si7021: Temp: ");
     Serial.print(t);
     Serial.print("\nsetup_bme280_si7021: Humidity: ");
-    Serial.print(mySensor_Si7021.readHumidity());
+    Serial.print(readadjustedhum());
     Serial.print("\nsetup_bme280_si7021: Pressure: N/A. Si7021 doesn't do pressure!");
     Serial.print("\nsetup_bme280_si7021: finished\n");
   }
@@ -410,23 +406,50 @@ int setup_bme280_si7021()
 }
 
 
+int setup_bme280_bosch()
+{
+  float t;
 
-// forced módban működő szenzorral mér
-// igazított értéket ad vissza
+  // we have already initialised the sensor if it's a Bosch in I2C_Scanner()
+ 
+  init_bme280 = 0;
+  t = readadjustedtemp();
+  tempfirstsample = t;
+  Serial.print("\nsetup_bme280_bosch: Temp: ");
+  Serial.print(t);
+  Serial.print("\nsetup_bme280_bosch: Humidity: ");
+  Serial.print(readadjustedhum());
+  Serial.print("\nsetup_bme280_si7021: Pressure: ");
+  Serial.print(readadjustedpress());
+  Serial.print("\nsetup_bme280_si7021: finished\n");
+   
+  return init_bme280;
+}
+
+
+
 float readadjustedtemp()
 {
   float t = 0.0;
 
-  if (bme_type == BME280_Si7021) {
-    t = mySensor_Si7021.readTemperature();
-    
-  } else {
-    mySensor.setMode(MODE_FORCED); //Wake up sensor and take reading
-    while (mySensor.isMeasuring() == false) ; //Wait for sensor to start measurment
-    while (mySensor.isMeasuring() == true) ; //Hang out while sensor completes the reading
-
-    t = mySensor.readTempC();
+  switch (bme_type) {
+    case BME280_SparkFun:
+    // forced módban működő szenzorral mér
+    // igazított értéket ad vissza
+      mySensor_SparkFun.setMode(MODE_FORCED); //Wake up sensor and take reading
+      while (mySensor_SparkFun.isMeasuring() == false) ; //Wait for sensor to start measurment
+      while (mySensor_SparkFun.isMeasuring() == true) ; //Hang out while sensor completes the reading
+      t = mySensor_SparkFun.readTempC();
+      break;
+    case BME280_Si7021:
+      t = mySensor_Si7021.readTemperature();
+      break;
+    case BME280_Bosch:
+//      mySensor_Bosch.read(Bosch_pres, Bosch_temp, Bosch_hum, tempUnit, presUnit);  
+//      t = Bosch_temp;
+      break;
   }
+
   Serial.print("\nreadadjustedtemp: Sensor reports:");
   Serial.print( t );
   Serial.print(" adjusting to ");
@@ -442,12 +465,20 @@ float readadjustedhum()
 {
   float h = 0.0;
 
-  if (bme_type == BME280_Si7021) {
-    h = mySensor_Si7021.readHumidity();    
-  } else {
-    h = mySensor.readFloatHumidity();
+  switch (bme_type) {
+    case BME280_SparkFun:
+      h = mySensor_SparkFun.readFloatHumidity();
+      break;
+    case BME280_Si7021:
+      h = mySensor_Si7021.readHumidity();
+      break;
+    case BME280_Bosch:
+//      mySensor_Bosch.read(Bosch_pres, Bosch_temp, Bosch_hum, tempUnit, presUnit);  
+//      h = Bosch_hum;
+      break;
   }
-    return ( h + humadjust );
+
+  return ( h + humadjust );
 }
 
 
@@ -455,14 +486,21 @@ float readadjustedpress()
 {
   float p = 0.0;
 
-  if (bme_type == BME280_Si7021) {
-    p = 0;  
-  } else {
-    p = mySensor.readFloatPressure();
+  switch (bme_type) {
+    case BME280_SparkFun:
+      p = mySensor_SparkFun.readFloatPressure();  
+      break;
+    case BME280_Si7021:
+      p = 0;      // no pressure sensor
+      break;
+    case BME280_Bosch:
+//      mySensor_Bosch.read(Bosch_pres, Bosch_temp, Bosch_hum, tempUnit, presUnit);  
+//      p = Bosch_pres;
+      break;
   }
-  return ( p + pressadjust );
-}
 
+   return ( p + pressadjust );
+}
 
 
 // Log to ThingSpeak
@@ -1419,12 +1457,20 @@ void setup(void) {
   init_last24h();
 
   if (lcd_connected) lcd.setCursor(0,3);
-  if (bme_type == BME280_Si7021) {
-    setup_bme280_si7021();
-    if (lcd_connected) lcd.print("Si7021 sensor OK");
-  } else {
-    setup_bme280(i2caddr_bme280);
-    if (lcd_connected) lcd.print("BME280 sensor OK");
+
+  switch (bme_type) {
+    case BME280_SparkFun:
+      setup_bme280_sparkfun(i2caddr_bme280);
+      if (lcd_connected) lcd.print("BME280 Sparkfun sensor OK");
+      break;
+    case BME280_Si7021:
+      setup_bme280_si7021();
+      if (lcd_connected) lcd.print("Si7021 sensor OK");
+      break;
+    case BME280_Bosch:
+      setup_bme280_bosch();
+      if (lcd_connected) lcd.print("BME280 Bosch sensor OK");
+      break;
   }
 
   sensor[0].hostname = "localhost";
